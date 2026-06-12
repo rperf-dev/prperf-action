@@ -1,0 +1,40 @@
+name: "prperf"
+description: >
+  Run a Ruby benchmark under rperf N times and upload the profiles to a
+  prperf server (PR performance regression checks). Authenticates with the
+  GitHub Actions OIDC token — no API keys to configure.
+branding:
+  icon: "trending-up"
+  color: "red"
+
+inputs:
+  run:
+    description: >
+      Measurement command (required), e.g.
+      "bundle exec rperf record --snapshot-dir $PRPERF_DIR -- ruby bench/main.rb".
+      It must produce one or more .json.gz profiles (rperf >= 0.10).
+    required: true
+  count:
+    description: "Number of measurement runs"
+    required: false
+    default: "3"
+  server:
+    description: "prperf server origin"
+    required: false
+    default: "https://rperf.atdot.net"
+  upload:
+    description: "Upload the profiles (set to false for a dry run)"
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run rperf and upload profiles
+      shell: bash
+      run: "${{ github.action_path }}/run.sh"
+      env:
+        PRPERF_RUN: ${{ inputs.run }}
+        PRPERF_COUNT: ${{ inputs.count }}
+        PRPERF_SERVER: ${{ inputs.server }}
+        PRPERF_UPLOAD: ${{ inputs.upload }}
