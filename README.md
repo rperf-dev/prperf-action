@@ -71,29 +71,64 @@ jobs:
 | `run` | Measurement command (required). Must produce `.json.gz` profile(s); `$PRPERF_DIR` is provided as a convenient `--snapshot-dir` target. | — |
 | `count` | Number of measurement runs (each gets a `run=N` label; the server compares the median) | `3` |
 | `benchmark` | Name of this benchmark series (e.g. `boot`, `endpoint1`). One commit can carry several benchmarks, each compared independently. | `default` |
+| `thresholds` | YAML thresholds for THIS benchmark; overrides the job-level defaults per key (see below). | `""` |
+| `comment` | Sticky PR comment mode: `always` / `on_threshold` / `never`. | `on_threshold` |
 | `server` | prperf server origin | `https://rperf.atdot.net` |
 | `upload` | Set `false` to measure without uploading | `true` |
+
+Everything — measurement commands and all threshold/comment policy — lives
+in the workflow; there is no separate config file.
 
 ## Multiple benchmarks
 
 A single commit can be measured by several benchmarks — use one action step
 per benchmark, giving each a distinct `benchmark` name. The server compares
 each benchmark against its own base and shows all of them in one Check Run.
+Use the same `benchmark` names in your PR and base (default-branch)
+workflows so each series has a baseline.
+
+## Thresholds
+
+Exceeding a threshold adds a ⚠️ and (per `comment`) a PR comment — it never
+fails the build. Write **global defaults once** in a job-level `env` block
+(`PRPERF_DEFAULT_THRESHOLDS`), and **override per benchmark** with the
+step's `thresholds` input (override wins per key):
 
 ```yaml
-- uses: rperf-dev/prperf-action@v1
-  with:
-    benchmark: boot
-    run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- bin/rails runner ""
-- uses: rperf-dev/prperf-action@v1
-  with:
-    benchmark: render
-    run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- ruby bench/render.rb
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PRPERF_DEFAULT_THRESHOLDS: |     # applies to every benchmark
+        alloc: "+10%"
+        total_ms: "+20%"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ruby/setup-ruby@v1
+        with: { bundler-cache: true }
+
+      - uses: rperf-dev/prperf-action@v1
+        with:
+          benchmark: boot
+          run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- bin/rails runner ""
+          thresholds: |                # boot adds/overrides
+            gc_count: "+1"
+
+      - uses: rperf-dev/prperf-action@v1
+        with:
+          benchmark: endpoint1
+          run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- ruby bench/endpoint1.rb
+          thresholds: |
+            alloc: "+5%"               # endpoint1 tightens the global +10%
 ```
 
-Thresholds in `.prperf.yml` apply to every benchmark (relative thresholds
-like `+10%` generalize across them). Use the same `benchmark` names in your
-PR and base (default-branch) workflows so each series has a baseline.
+Threshold keys: `alloc` / `gc_count` / `total_ms` / `cpu_ms` with a value
+`"+N%"` (relative) or `"+N"` (absolute), and `method` (a mapping of method
+name to `"N%"` absolute self-time share). Bad entries are ignored with a
+warning on the Check Run.
 
 ## Behavior and limitations
 
@@ -104,5 +139,3 @@ PR and base (default-branch) workflows so each series has a baseline.
 - **PRs from forks cannot upload**: GitHub does not grant `id-token: write`
   to fork-triggered workflows, so no OIDC token exists there. Same-repo
   branch PRs work normally.
-- Thresholds and comment behavior are configured in the repository's
-  `.prperf.yml` — see the server documentation.

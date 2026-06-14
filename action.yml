@@ -25,6 +25,22 @@ inputs:
       independently; use one action step per benchmark.
     required: false
     default: "default"
+  thresholds:
+    description: >
+      Optional YAML mapping of thresholds for THIS benchmark; overrides the
+      job-level defaults (env PRPERF_DEFAULT_THRESHOLDS) per key. Exceeding a
+      threshold adds a ⚠️ and (per `comment`) a PR comment; it never fails
+      the build. Keys: alloc / gc_count / total_ms / cpu_ms (value "+N%"
+      relative or "+N" absolute) and method (mapping of method name to "N%"
+      absolute share). Global defaults for ALL benchmarks go in a job-level
+      "env: { PRPERF_DEFAULT_THRESHOLDS: | ... }" block (written once).
+    required: false
+    default: ""
+  comment:
+    description: >
+      When to post the sticky PR comment: always | on_threshold | never.
+    required: false
+    default: "on_threshold"
   server:
     description: "prperf server origin"
     required: false
@@ -44,5 +60,7 @@ runs:
         PRPERF_RUN: ${{ inputs.run }}
         PRPERF_COUNT: ${{ inputs.count }}
         PRPERF_BENCHMARK: ${{ inputs.benchmark }}
+        PRPERF_THRESHOLDS: ${{ inputs.thresholds }}
+        PRPERF_COMMENT: ${{ inputs.comment }}
         PRPERF_SERVER: ${{ inputs.server }}
         PRPERF_UPLOAD: ${{ inputs.upload }}
