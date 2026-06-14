@@ -87,20 +87,20 @@ each benchmark against its own base and shows all of them in one Check Run.
 Use the same `benchmark` names in your PR and base (default-branch)
 workflows so each series has a baseline.
 
-## Thresholds
+## Thresholds (optional)
 
-Exceeding a threshold adds a ⚠️ and (per `comment`) a PR comment — it never
-fails the build. Write **global defaults once** in a job-level `env` block
-(`PRPERF_DEFAULT_THRESHOLDS`), and **override per benchmark** with the
-step's `thresholds` input (override wins per key):
+Thresholds are opt-in. With none, the Check Run still shows the numbers — you
+add thresholds only when you want a ⚠️ and (per `comment`) a PR comment on a
+regression. Exceeding one never fails the build.
+
+The simplest setup, and all most projects need: one global block for every
+benchmark, in a job-level `env`. The steps need nothing extra.
 
 ```yaml
 jobs:
   bench:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
+    permissions: { contents: read, id-token: write }
     env:
       PRPERF_DEFAULT_THRESHOLDS: |     # applies to every benchmark
         alloc: "+10%"
@@ -109,26 +109,30 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
         with: { bundler-cache: true }
-
       - uses: rperf-dev/prperf-action@v1
         with:
           benchmark: boot
           run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- bin/rails runner ""
-          thresholds: |                # boot adds/overrides
-            gc_count: "+1"
-
-      - uses: rperf-dev/prperf-action@v1
-        with:
-          benchmark: endpoint1
-          run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- ruby bench/endpoint1.rb
-          thresholds: |
-            alloc: "+5%"               # endpoint1 tightens the global +10%
 ```
 
 Threshold keys: `alloc` / `gc_count` / `total_ms` / `cpu_ms` with a value
 `"+N%"` (relative) or `"+N"` (absolute), and `method` (a mapping of method
 name to `"N%"` absolute self-time share). Bad entries are ignored with a
 warning on the Check Run.
+
+### Per-benchmark overrides (advanced)
+
+If one benchmark needs different thresholds, add a `thresholds` input on its
+step — it overrides the global defaults per key. Most projects won't need this.
+
+```yaml
+      - uses: rperf-dev/prperf-action@v1
+        with:
+          benchmark: endpoint1
+          run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- ruby bench/endpoint1.rb
+          thresholds: |
+            alloc: "+5%"               # tightens the global +10% for endpoint1
+```
 
 ## Behavior and limitations
 
