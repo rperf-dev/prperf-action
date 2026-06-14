@@ -70,8 +70,30 @@ jobs:
 |---|---|---|
 | `run` | Measurement command (required). Must produce `.json.gz` profile(s); `$PRPERF_DIR` is provided as a convenient `--snapshot-dir` target. | — |
 | `count` | Number of measurement runs (each gets a `run=N` label; the server compares the median) | `3` |
+| `benchmark` | Name of this benchmark series (e.g. `boot`, `endpoint1`). One commit can carry several benchmarks, each compared independently. | `default` |
 | `server` | prperf server origin | `https://rperf.atdot.net` |
 | `upload` | Set `false` to measure without uploading | `true` |
+
+## Multiple benchmarks
+
+A single commit can be measured by several benchmarks — use one action step
+per benchmark, giving each a distinct `benchmark` name. The server compares
+each benchmark against its own base and shows all of them in one Check Run.
+
+```yaml
+- uses: rperf-dev/prperf-action@v1
+  with:
+    benchmark: boot
+    run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- bin/rails runner ""
+- uses: rperf-dev/prperf-action@v1
+  with:
+    benchmark: render
+    run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- ruby bench/render.rb
+```
+
+Thresholds in `.prperf.yml` apply to every benchmark (relative thresholds
+like `+10%` generalize across them). Use the same `benchmark` names in your
+PR and base (default-branch) workflows so each series has a baseline.
 
 ## Behavior and limitations
 

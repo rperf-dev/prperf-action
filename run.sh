@@ -12,9 +12,15 @@ set -u
 count="${PRPERF_COUNT:-3}"
 server="${PRPERF_SERVER%/}"
 upload="${PRPERF_UPLOAD:-true}"
+benchmark="${PRPERF_BENCHMARK:-default}"
 
 if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -lt 1 ]; then
   echo "::error::count must be a positive integer, got '$count'"
+  exit 1
+fi
+
+if ! [[ "$benchmark" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "::error::benchmark must match [A-Za-z0-9._-]+, got '$benchmark'"
   exit 1
 fi
 
@@ -29,9 +35,10 @@ profiles=()
 for n in $(seq 1 "$count"); do
   echo "::group::rperf run $n/$count"
   touch "$marker"
-  # The label ends up in meta.labels (rperf reads RPERF_META_LABELS; same
+  # The labels end up in meta.labels (rperf reads RPERF_META_LABELS; same
   # mechanism as --label, but injectable without rewriting the user command).
-  if ! RPERF_META_LABELS="{\"run\":$n}" bash -c "$PRPERF_RUN"; then
+  # `bench` selects the comparison series on the server; `run` is the repeat.
+  if ! RPERF_META_LABELS="{\"bench\":\"$benchmark\",\"run\":$n}" bash -c "$PRPERF_RUN"; then
     echo "::endgroup::"
     echo "::error::measurement command failed on run $n"
     exit 1

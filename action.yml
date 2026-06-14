@@ -18,6 +18,13 @@ inputs:
     description: "Number of measurement runs"
     required: false
     default: "3"
+  benchmark:
+    description: >
+      Benchmark name for this measurement series (e.g. boot, endpoint1).
+      A single commit can carry several benchmarks, each compared
+      independently; use one action step per benchmark.
+    required: false
+    default: "default"
   server:
     description: "prperf server origin"
     required: false
@@ -36,5 +43,6 @@ runs:
       env:
         PRPERF_RUN: ${{ inputs.run }}
         PRPERF_COUNT: ${{ inputs.count }}
+        PRPERF_BENCHMARK: ${{ inputs.benchmark }}
         PRPERF_SERVER: ${{ inputs.server }}
         PRPERF_UPLOAD: ${{ inputs.upload }}

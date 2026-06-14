@@ -51,5 +51,13 @@ run_case "invalid count is rejected" 1 \
   env PRPERF_RUN="true" PRPERF_COUNT=zero \
       PRPERF_SERVER=http://unused PRPERF_UPLOAD=false
 
+run_case "unsafe benchmark name is rejected" 1 \
+  env PRPERF_RUN="true" PRPERF_COUNT=1 PRPERF_BENCHMARK="../etc" \
+      PRPERF_SERVER=http://unused PRPERF_UPLOAD=false
+
+run_case "named benchmark measures + collects" 0 \
+  env PRPERF_RUN="cp $tmp/new.json.gz \"\$PRPERF_DIR/\"" PRPERF_COUNT=1 \
+      PRPERF_BENCHMARK=boot PRPERF_SERVER=http://unused PRPERF_UPLOAD=false
+
 [ "$failures" -eq 0 ] || exit 1
 echo "all smoke tests passed"
