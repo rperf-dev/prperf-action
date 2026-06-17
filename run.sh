@@ -15,6 +15,7 @@ upload="${PRPERF_UPLOAD:-true}"
 benchmark="${PRPERF_BENCHMARK:-default}"
 thresholds="${PRPERF_THRESHOLDS:-}"
 comment="${PRPERF_COMMENT:-on_threshold}"
+prepare_run="${PRPERF_PREPARE_RUN:-}"
 # Global defaults shared by every benchmark, set once as a job-level env var
 # (ambient, not an action input). The per-step `thresholds` overrides it.
 default_thresholds="${PRPERF_DEFAULT_THRESHOLDS:-}"
@@ -36,6 +37,19 @@ export PRPERF_DIR
 
 marker="$(mktemp)"
 profiles=()
+
+# One-time setup before measuring (generate fixtures, seed a DB, build assets).
+# Not measured; it runs before the marker, so anything it writes is never
+# collected as a profile. A failure here fails the step.
+if [ -n "$prepare_run" ]; then
+  echo "::group::prepare_run"
+  if ! bash -c "$prepare_run"; then
+    echo "::endgroup::"
+    echo "::error::prepare_run failed"
+    exit 1
+  fi
+  echo "::endgroup::"
+fi
 
 for n in $(seq 1 "$count"); do
   echo "::group::rperf run $n/$count"

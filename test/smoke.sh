@@ -59,5 +59,15 @@ run_case "named benchmark measures + collects" 0 \
   env PRPERF_RUN="cp $tmp/new.json.gz \"\$PRPERF_DIR/\"" PRPERF_COUNT=1 \
       PRPERF_BENCHMARK=boot PRPERF_SERVER=http://unused PRPERF_UPLOAD=false
 
+run_case "prepare_run runs before measuring" 0 \
+  env PRPERF_PREPARE_RUN="echo prepared" \
+      PRPERF_RUN="cp $tmp/new.json.gz \"\$PRPERF_DIR/\"" PRPERF_COUNT=1 \
+      PRPERF_SERVER=http://unused PRPERF_UPLOAD=false
+
+run_case "prepare_run failure fails the step" 1 \
+  env PRPERF_PREPARE_RUN="false" \
+      PRPERF_RUN="cp $tmp/new.json.gz \"\$PRPERF_DIR/\"" PRPERF_COUNT=1 \
+      PRPERF_SERVER=http://unused PRPERF_UPLOAD=false
+
 [ "$failures" -eq 0 ] || exit 1
 echo "all smoke tests passed"

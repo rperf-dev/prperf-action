@@ -14,6 +14,13 @@ inputs:
       "bundle exec rperf record --snapshot-dir $PRPERF_DIR -- ruby bench/main.rb".
       It must produce one or more .json.gz profiles (rperf >= 0.10).
     required: true
+  prepare_run:
+    description: >
+      Optional one-time setup command, run ONCE before the measurement runs
+      and NOT measured (e.g. generate fixtures, seed a DB, build assets).
+      A failure here fails the step.
+    required: false
+    default: ""
   count:
     description: "Number of measurement runs"
     required: false
@@ -58,6 +65,7 @@ runs:
       run: "${{ github.action_path }}/run.sh"
       env:
         PRPERF_RUN: ${{ inputs.run }}
+        PRPERF_PREPARE_RUN: ${{ inputs.prepare_run }}
         PRPERF_COUNT: ${{ inputs.count }}
         PRPERF_BENCHMARK: ${{ inputs.benchmark }}
         PRPERF_THRESHOLDS: ${{ inputs.thresholds }}

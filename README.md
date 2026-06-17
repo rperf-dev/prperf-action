@@ -69,6 +69,7 @@ jobs:
 | Input | Description | Default |
 |---|---|---|
 | `run` | Measurement command (required). Must produce `.json.gz` profile(s); `$PRPERF_DIR` is provided as a convenient `--snapshot-dir` target. | — |
+| `prepare_run` | One-time setup command, run ONCE before the measurement runs and NOT measured (e.g. generate fixtures, seed a DB, build assets). A failure fails the step. | `""` |
 | `count` | Number of measurement runs (each gets a `run=N` label; the server compares the median) | `3` |
 | `benchmark` | Name of this benchmark series (e.g. `boot`, `endpoint1`). One commit can carry several benchmarks, each compared independently. | `default` |
 | `thresholds` | YAML thresholds for THIS benchmark; overrides the job-level defaults per key (see below). | `""` |
