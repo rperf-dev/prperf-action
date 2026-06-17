@@ -73,7 +73,7 @@ jobs:
 | `benchmark` | Name of this benchmark series (e.g. `boot`, `endpoint1`). One commit can carry several benchmarks, each compared independently. | `default` |
 | `thresholds` | YAML thresholds for THIS benchmark; overrides the job-level defaults per key (see below). | `""` |
 | `comment` | Sticky PR comment mode: `always` / `on_threshold` / `never`. | `on_threshold` |
-| `server` | prperf server origin | `https://rperf.atdot.net` |
+| `server` | prperf server origin | `https://prperf.atdot.net` |
 | `upload` | Set `false` to measure without uploading | `true` |
 
 Everything — measurement commands and all threshold/comment policy — lives

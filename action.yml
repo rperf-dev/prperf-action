@@ -44,7 +44,7 @@ inputs:
   server:
     description: "prperf server origin"
     required: false
-    default: "https://rperf.atdot.net"
+    default: "https://prperf.atdot.net"
   upload:
     description: "Upload the profiles (set to false for a dry run)"
     required: false
