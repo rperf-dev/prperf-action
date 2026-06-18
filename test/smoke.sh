@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local smoke tests for run.sh (no network, upload: false paths).
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 failures=0
 
 run_case() {
@@ -12,6 +12,8 @@ run_case() {
   local code=$?
   if [ "$code" -ne "$expected" ]; then
     echo "FAIL $name: exit $code (expected $expected)"
+    # sed cleanly indents each line of the captured output
+    # shellcheck disable=SC2001
     echo "$out" | sed 's/^/    /'
     failures=$((failures + 1))
   else
