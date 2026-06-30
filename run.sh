@@ -197,6 +197,9 @@ for n in $(seq 1 "$count"); do
     # Source rperf's env, then become the session root (export the pid that will
     # exec the command, so that process — not this shell's child — is root) and
     # exec the command verbatim. `eval "exec …"` keeps the user's quoting.
+    # $$, $PRPERF_RUN, $_env below are for the INNER bash, not this shell —
+    # the single quotes are deliberate.
+    # shellcheck disable=SC2016
     env RPERF_META_LABELS="$labels" bash -c '
       _env="$('"$printenv_cmd"')" || { echo "::error::rperf --print-env failed" >&2; exit 1; }
       eval "$_env"
