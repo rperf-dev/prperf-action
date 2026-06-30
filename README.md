@@ -53,20 +53,20 @@ jobs:
           bundler-cache: true
       - uses: rperf-dev/prperf-action@v1
         with:
-          run: ruby bench/main.rb   # ← just your command; the action wraps it in rperf
+          run: ruby bench/main.rb   # just your command — the action measures it under rperf
 ```
 
-You write only the command you want to profile. The action wraps it in
-`rperf record` for you (using the bundle's rperf, or one it installs when there
-is no Gemfile). To take control of the rperf invocation yourself, set
+You write only the command you want to profile; the action measures it under
+rperf for you — without rewriting your command — using the bundle's rperf (or
+one it installs when there is no Gemfile). To drive rperf yourself instead, set
 `record: false` and write the full `rperf record ... -- ...` command in `run`.
 
 ## Inputs
 
 | Input | Description | Default |
 |---|---|---|
-| `run` | Measurement command (required) — just the command to profile (e.g. `bin/rails runner ""`). The action wraps it in `rperf record`. With `record: false`, write the full `rperf record ... -- ...` yourself. | — |
-| `record` | Wrap `run` in `rperf record` (uses the bundle's rperf, else an installed one). Set `false` to run `run` verbatim. | `true` |
+| `run` | Measurement command (required) — just the command to profile (e.g. `bin/rails runner ""`). The action measures it under rperf, unchanged. With `record: false`, write the full `rperf record ... -- ...` yourself. | — |
+| `record` | Measure `run` under rperf (using the bundle's rperf, else an installed one). Set `false` when `run` already invokes rperf itself. | `true` |
 | `rperf_version` | rperf version to install on the no-Gemfile path. Empty = latest. Ignored when a Gemfile is present or `record: false`. | `""` |
 | `prepare_run` | One-time setup command, run ONCE before measuring and NOT measured (e.g. generate fixtures, seed a DB). A failure fails the step. | `""` |
 | `count` | Number of measurement runs (each gets a `run=N` label; the server compares the median) | `3` |
