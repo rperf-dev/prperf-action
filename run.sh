@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# prperf-action driver: run the measurement command N times, collect the
-# generated .json.gz profiles, upload them with an OIDC token.
+# prperf-action driver: run the measurement command N times under rperf, collect
+# the generated .json.gz profiles, upload them with an OIDC token, and — for a
+# public (install-free) repo — write the Check Run + sticky comment with the
+# workflow token. Installed repos are written server-side by the prperf App.
 #
 # Failure policy:
 # - the measurement command failing fails the step (a broken benchmark is
 #   the user's signal to act on)
-# - upload problems NEVER fail the step (warnings only) — prperf must not
-#   block anyone's CI
+# - upload / Check-Run / comment problems NEVER fail the step (warnings only) —
+#   prperf must not block anyone's CI
 set -u
 
 count="${PRPERF_COUNT:-3}"
 server="${PRPERF_SERVER%/}"
 upload="${PRPERF_UPLOAD:-true}"
+record="${PRPERF_RECORD:-true}"
+rperf_version="${PRPERF_RPERF_VERSION:-}"
 benchmark="${PRPERF_BENCHMARK:-default}"
 thresholds="${PRPERF_THRESHOLDS:-}"
 comment="${PRPERF_COMMENT:-on_threshold}"
@@ -29,6 +33,78 @@ if ! [[ "$benchmark" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "::error::benchmark must match [A-Za-z0-9._-]+, got '$benchmark'"
   exit 1
 fi
+
+# Write (or update) the Check Run and sticky comment for a public repo, using
+# GH_TOKEN. The server already rendered them (it stored the profiles but cannot
+# write as the App with no installation); we ask /checks/render for the payload
+# — aggregated across every benchmark for this head sha — and write it. Each
+# call upserts the same Check Run (matched by head sha + name) and the same
+# comment (matched by a hidden marker), so multiple benchmark steps fill in one
+# Check Run. Everything here is best-effort: never fail the step.
+write_check_run() {
+  local oidc="$1"
+  local head_sha base_ref base_sha pr_number payload
+  head_sha="$(jq -r '.pull_request.head.sha // empty' "$GITHUB_EVENT_PATH")"
+  base_ref="$(jq -r '.pull_request.base.ref // empty' "$GITHUB_EVENT_PATH")"
+  base_sha="$(jq -r '.pull_request.base.sha // empty' "$GITHUB_EVENT_PATH")"
+  pr_number="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
+  [ -n "$head_sha" ] || { echo "::warning::no PR head sha; skipping Check Run"; return; }
+
+  payload="$(curl -sf -X POST "$server/api/v1/checks/render" \
+    -H "Authorization: Bearer $oidc" -H "Content-Type: application/json" \
+    -d "$(jq -n --arg h "$head_sha" --arg br "$base_ref" --arg bs "$base_sha" \
+            '{head_sha:$h, base_ref:$br, base_sha:$bs}')")" || {
+    echo "::warning::could not render the Check Run (server error); skipping"
+    return
+  }
+
+  local name title summary
+  name="$(jq -r '.check_run.name' <<<"$payload")"
+  title="$(jq -r '.check_run.title' <<<"$payload")"
+  summary="$(jq -r '.check_run.summary' <<<"$payload")"
+
+  if [ -z "${GH_TOKEN:-}" ]; then
+    echo "::warning::no token to write the Check Run. Add 'permissions: checks: write'" \
+         "and 'pull-requests: write' (public repos are written with the workflow token)."
+    return
+  fi
+
+  # Upsert the Check Run: PATCH the existing one for this head sha+name, else
+  # POST. The body is built with jq and sent via --input - so the nested
+  # `output` object is real JSON (gh's -f does not parse bracket nesting).
+  local existing
+  existing="$(gh api "repos/$GITHUB_REPOSITORY/commits/$head_sha/check-runs" \
+    -q ".check_runs[] | select(.name==\"$name\") | .id" 2>/dev/null | head -1)"
+  if [ -n "$existing" ]; then
+    jq -n --arg t "$title" --arg s "$summary" \
+      '{status:"completed", conclusion:"success", output:{title:$t, summary:$s}}' \
+      | gh api -X PATCH "repos/$GITHUB_REPOSITORY/check-runs/$existing" --input - >/dev/null 2>&1 \
+      || echo "::warning::could not update the Check Run (need 'checks: write')"
+  else
+    jq -n --arg n "$name" --arg sha "$head_sha" --arg t "$title" --arg s "$summary" \
+      '{name:$n, head_sha:$sha, status:"completed", conclusion:"success", output:{title:$t, summary:$s}}' \
+      | gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" --input - >/dev/null 2>&1 \
+      || echo "::warning::could not create the Check Run (need 'checks: write')"
+  fi
+
+  # Sticky comment: upsert by hidden marker when the server says to post one.
+  if [ "$(jq -r '.comment.post' <<<"$payload")" = "true" ] && [ -n "$pr_number" ]; then
+    local marker body cid
+    marker="$(jq -r '.comment.marker' <<<"$payload")"
+    body="$(jq -r '.comment.body' <<<"$payload")"
+    cid="$(gh api "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" --paginate \
+      -q ".[] | select(.body | contains(\"$marker\")) | .id" 2>/dev/null | head -1)"
+    if [ -n "$cid" ]; then
+      jq -n --arg b "$body" '{body:$b}' \
+        | gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$cid" --input - >/dev/null 2>&1 \
+        || echo "::warning::could not update the PR comment (need 'pull-requests: write')"
+    else
+      jq -n --arg b "$body" '{body:$b}' \
+        | gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" --input - >/dev/null 2>&1 \
+        || echo "::warning::could not post the PR comment (need 'pull-requests: write')"
+    fi
+  fi
+}
 
 # A directory the measurement command may use via --snapshot-dir "$PRPERF_DIR";
 # profiles written anywhere in the workspace are found too.
@@ -51,13 +127,48 @@ if [ -n "$prepare_run" ]; then
   echo "::endgroup::"
 fi
 
+# Decide how to run the measurement command. record=false means the user's `run`
+# already invokes rperf, so it is executed verbatim. Otherwise we wrap `run` in
+# `rperf record`, choosing the rperf to use by whether this is a Bundler project:
+#   - Gemfile present  -> `bundle exec rperf` (the bundle's rperf; its in-process
+#     -rrperf load matches the bundled version, so no Bundler activation clash).
+#     rperf MUST be in the Gemfile — we do not inject one (that would conflict
+#     with an app that already depends on rperf).
+#   - no Gemfile       -> a plain `rperf` (gem-installed here if missing). No
+#     Bundler is involved, so nothing to clash with.
+# The result is the array `record_prefix` prepended to `-- <run>`.
+record_prefix=()
+if [ "$record" = "true" ]; then
+  if [ -n "${BUNDLE_GEMFILE:-}" ] || [ -f Gemfile ] || [ -f gems.rb ]; then
+    if ! bundle exec rperf --version >/dev/null 2>&1; then
+      echo "::error::rperf is not in your bundle. Add it to your Gemfile (a" \
+           "'group :rperf' is fine) so 'bundle exec rperf' works, or set" \
+           "record: false and invoke rperf yourself."
+      exit 1
+    fi
+    record_prefix=(bundle exec rperf record --snapshot-dir "$PRPERF_DIR" --)
+  else
+    if ! command -v rperf >/dev/null 2>&1; then
+      echo "::group::install rperf"
+      if [ -n "$rperf_version" ]; then
+        gem install --no-document rperf -v "$rperf_version"
+      else
+        gem install --no-document rperf
+      fi
+      echo "::endgroup::"
+    fi
+    record_prefix=(rperf record --snapshot-dir "$PRPERF_DIR" --)
+  fi
+fi
+
 for n in $(seq 1 "$count"); do
   echo "::group::rperf run $n/$count"
   touch "$marker"
   # The labels end up in meta.labels (rperf reads RPERF_META_LABELS; same
   # mechanism as --label, but injectable without rewriting the user command).
   # `bench` selects the comparison series on the server; `run` is the repeat.
-  if ! RPERF_META_LABELS="{\"bench\":\"$benchmark\",\"run\":$n}" bash -c "$PRPERF_RUN"; then
+  if ! RPERF_META_LABELS="{\"bench\":\"$benchmark\",\"run\":$n}" \
+       "${record_prefix[@]}" bash -c "$PRPERF_RUN"; then
     echo "::endgroup::"
     echo "::error::measurement command failed on run $n"
     exit 1
@@ -71,8 +182,9 @@ for n in $(seq 1 "$count"); do
 done
 
 if [ "${#profiles[@]}" -eq 0 ]; then
-  echo "::error::no .json.gz profile was produced — make the command write one," \
-       "e.g.: bundle exec rperf record --snapshot-dir \"\$PRPERF_DIR\" -- ruby bench.rb"
+  echo "::error::no .json.gz profile was produced — make the command write one" \
+       "(rperf record writes to \$PRPERF_DIR). With record: false, your command" \
+       "must run 'rperf record --snapshot-dir \"\$PRPERF_DIR\" -- ...' itself."
   exit 1
 fi
 echo "collected ${#profiles[@]} profile(s)"
@@ -107,6 +219,7 @@ thresholds_b64="$(printf '%s' "$thresholds" | base64 | tr -d '\n')"
 default_thresholds_b64="$(printf '%s' "$default_thresholds" | base64 | tr -d '\n')"
 
 view_url=""
+write_mode=""
 uploaded=0
 for f in "${profiles[@]}"; do
   response="$(mktemp)"
@@ -119,6 +232,7 @@ for f in "${profiles[@]}"; do
     201)
       uploaded=$((uploaded + 1))
       view_url="$(jq -r '.view_url // empty' "$response")"
+      write_mode="$(jq -r '.write_mode // empty' "$response")"
       ;;
     402|429)
       echo "::warning::upload rejected ($http_code): $(jq -r '.error // empty' "$response")"
@@ -128,6 +242,14 @@ for f in "${profiles[@]}"; do
       ;;
   esac
 done
+
+# Public, install-free repo on a PR: the server stored the profiles but does not
+# write the Check Run (no App installation to write as) — write_mode "action".
+# (write_mode "server" = installed repo, already written by the App.)
+if [ "$uploaded" -gt 0 ] && [ "$write_mode" = "action" ] \
+   && [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -n "${GITHUB_EVENT_PATH:-}" ]; then
+  write_check_run "$token"
+fi
 
 {
   echo "### prperf"

@@ -1,18 +1,27 @@
 # prperf-action
 
-Runs your Ruby benchmark under [rperf](https://github.com/ko1/rperf) in CI
-and uploads the profiles to a prperf server, which posts the base-vs-PR
-comparison to a GitHub Check Run (and a
-PR comment when your thresholds are exceeded).
+Runs your Ruby benchmark under [rperf](https://github.com/ko1/rperf) in CI and
+uploads the profiles to a prperf server, which compares the PR against the base
+branch. The base-vs-PR result is reported on a GitHub **Check Run** (and a sticky
+PR comment when your thresholds are exceeded). It never blocks CI.
+
+**Public repositories need no App install** — the action writes the Check Run
+and comment with the workflow token. **Private repositories** install the
+[prperf GitHub App](https://github.com/apps/prperf) (paid plan), which writes
+the Check Run server-side as the App.
 
 Requirements:
 
-- **rperf >= 0.10** in your bundle (profiles must embed `meta`/`summary`;
-  the action fails with a clear error on older versions)
-- **`permissions: id-token: write`** on the job — uploads authenticate with
-  the GitHub Actions OIDC token, so there are no API keys or secrets
-- the [prperf GitHub App](https://github.com/apps/prperf) installed on the
-  repository
+- **rperf >= 0.10.** In a Bundler project, put `rperf` in your `Gemfile` (a
+  `group :rperf` is fine) — the action measures with the bundle's rperf. With no
+  Gemfile, the action installs rperf for you. Profiles must embed `meta`/`summary`;
+  the action fails with a clear error on older formats.
+- **`permissions`** on the job:
+  - `id-token: write` — uploads authenticate with the OIDC token (no secrets)
+  - `checks: write` and `pull-requests: write` — write the Check Run / comment
+    (public repos; harmless to include for private)
+  - `contents: read` — checkout
+- For **private** repos: the prperf GitHub App installed on the repository.
 
 ## Usage
 
@@ -34,7 +43,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write   # required: OIDC upload auth
+      id-token: write          # OIDC upload auth (no secrets)
+      checks: write            # write the Check Run (public repos)
+      pull-requests: write     # write the sticky comment (public repos)
     steps:
       - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
@@ -42,21 +53,29 @@ jobs:
           bundler-cache: true
       - uses: rperf-dev/prperf-action@v1
         with:
-          run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- ruby bench/main.rb
+          run: ruby bench/main.rb   # ← just your command; the action wraps it in rperf
 ```
+
+You write only the command you want to profile. The action wraps it in
+`rperf record` for you (using the bundle's rperf, or one it installs when there
+is no Gemfile). To take control of the rperf invocation yourself, set
+`record: false` and write the full `rperf record ... -- ...` command in `run`.
 
 ## Inputs
 
 | Input | Description | Default |
 |---|---|---|
-| `run` | Measurement command (required). Must produce `.json.gz` profile(s); `$PRPERF_DIR` is provided as a convenient `--snapshot-dir` target. | — |
-| `prepare_run` | One-time setup command, run ONCE before the measurement runs and NOT measured (e.g. generate fixtures, seed a DB, build assets). A failure fails the step. | `""` |
+| `run` | Measurement command (required) — just the command to profile (e.g. `bin/rails runner ""`). The action wraps it in `rperf record`. With `record: false`, write the full `rperf record ... -- ...` yourself. | — |
+| `record` | Wrap `run` in `rperf record` (uses the bundle's rperf, else an installed one). Set `false` to run `run` verbatim. | `true` |
+| `rperf_version` | rperf version to install on the no-Gemfile path. Empty = latest. Ignored when a Gemfile is present or `record: false`. | `""` |
+| `prepare_run` | One-time setup command, run ONCE before measuring and NOT measured (e.g. generate fixtures, seed a DB). A failure fails the step. | `""` |
 | `count` | Number of measurement runs (each gets a `run=N` label; the server compares the median) | `3` |
-| `benchmark` | Name of this benchmark series (e.g. `boot`, `endpoint1`). One commit can carry several benchmarks, each compared independently. | `default` |
+| `benchmark` | Name of this benchmark series (e.g. `boot`, `endpoint1`). One commit can carry several, each compared independently. | `default` |
 | `thresholds` | YAML thresholds for THIS benchmark; overrides the job-level defaults per key (see below). | `""` |
 | `comment` | Sticky PR comment mode: `always` / `on_threshold` / `never`. | `on_threshold` |
 | `server` | prperf server origin | `https://prperf.atdot.net` |
 | `upload` | Set `false` to measure without uploading | `true` |
+| `token` | Token used to write the Check Run/comment on public repos. | `${{ github.token }}` |
 
 Everything — measurement commands and all threshold/comment policy — lives
 in the workflow; there is no separate config file.
@@ -72,7 +91,7 @@ so each run starts from the same state.
       - uses: rperf-dev/prperf-action@v1
         with:
           prepare_run: bin/rails db:prepare db:seed   # once, before measuring
-          run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- ruby bench/request.rb
+          run: ruby bench/request.rb
 ```
 
 ## Multiple benchmarks
@@ -97,7 +116,11 @@ benchmark, in a job-level `env`. The steps need nothing extra.
 jobs:
   bench:
     runs-on: ubuntu-latest
-    permissions: { contents: read, id-token: write }
+    permissions:
+      contents: read
+      id-token: write
+      checks: write
+      pull-requests: write
     env:
       PRPERF_DEFAULT_THRESHOLDS: |     # applies to every benchmark
         alloc: "+10%"
@@ -109,7 +132,7 @@ jobs:
       - uses: rperf-dev/prperf-action@v1
         with:
           benchmark: boot
-          run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- bin/rails runner ""
+          run: bin/rails runner ""
 ```
 
 Threshold keys: `alloc` / `gc_count` / `total_ms` / `cpu_ms` with a value
@@ -126,17 +149,44 @@ step — it overrides the global defaults per key. Most projects won't need this
       - uses: rperf-dev/prperf-action@v1
         with:
           benchmark: endpoint1
-          run: bundle exec rperf record --snapshot-dir "$PRPERF_DIR" -- ruby bench/endpoint1.rb
+          run: ruby bench/endpoint1.rb
           thresholds: |
             alloc: "+5%"               # tightens the global +10% for endpoint1
 ```
 
+## rperf and your Gemfile
+
+rperf instruments your process in-process (it injects `-rrperf` and execs your
+command), so the rperf that measures must be the one your app loads:
+
+- **Bundler project (has a Gemfile):** keep `rperf` in the Gemfile and the
+  action runs `bundle exec rperf` — the CLI and the in-process rperf are the one
+  bundled version, so there is no version clash. The action will **not** inject a
+  different rperf (that would collide with an app that already depends on rperf).
+  Isolate it from production with a group if you like:
+
+  ```ruby
+  group :rperf do
+    gem "rperf"
+  end
+  ```
+
+- **No Gemfile:** the action installs rperf (`rperf_version` to pin) and runs it
+  directly — no Bundler, nothing to clash with.
+
+The compatibility contract with the server is the profile's `format_version`,
+not the rperf gem version: any rperf whose profile the server understands is
+accepted, and a too-new format is rejected with a clear message rather than
+silently misread.
+
 ## Behavior and limitations
 
-- The measurement command failing **fails the step**; upload problems
-  (plan limits, rate limits, server errors) only emit warnings — prperf
-  never blocks your CI.
+- The measurement command failing **fails the step**; upload, Check-Run, and
+  comment problems (plan limits, missing permissions, server errors) only emit
+  warnings — prperf never blocks your CI.
 - A link to the uploaded profile is written to the job's step summary.
 - **PRs from forks cannot upload**: GitHub does not grant `id-token: write`
-  to fork-triggered workflows, so no OIDC token exists there. Same-repo
-  branch PRs work normally.
+  to fork-triggered workflows, so no OIDC token exists there (and the workflow
+  token is read-only). Same-repo branch PRs work normally.
+- During the free beta, **public repositories only**; private repositories
+  arrive with paid plans (and require the App installed).

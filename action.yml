@@ -10,10 +10,34 @@ branding:
 inputs:
   run:
     description: >
-      Measurement command (required), e.g.
-      "bundle exec rperf record --snapshot-dir $PRPERF_DIR -- ruby bench/main.rb".
-      It must produce one or more .json.gz profiles (rperf >= 0.10).
+      Measurement command (required) — just the command you want to profile,
+      e.g. "bin/rails runner \"\"" or "ruby bench/main.rb". The action wraps it
+      in `rperf record` for you (using the bundle's rperf in a Bundler project,
+      otherwise a freshly installed rperf). Set `record: false` to instead write
+      the full `rperf record ... -- ...` command yourself.
     required: true
+  record:
+    description: >
+      Wrap `run` in `rperf record` (default true). Set to false when `run`
+      already invokes rperf itself (advanced/custom rperf flags); then it is run
+      verbatim and must still emit one or more .json.gz profiles (rperf >= 0.10).
+    required: false
+    default: "true"
+  rperf_version:
+    description: >
+      rperf gem version to install for the NON-Bundler path (no Gemfile). Empty
+      installs the latest. Ignored when the project has a Gemfile (the bundle's
+      rperf is used) or when record is false.
+    required: false
+    default: ""
+  token:
+    description: >
+      GitHub token used to write the Check Run + sticky comment on PUBLIC repos
+      (needs `checks: write` and `pull-requests: write`). Defaults to the
+      workflow token. Private repos are written by the installed prperf App, not
+      this token.
+    required: false
+    default: ${{ github.token }}
   prepare_run:
     description: >
       Optional one-time setup command, run ONCE before the measurement runs
@@ -65,6 +89,8 @@ runs:
       run: "${{ github.action_path }}/run.sh"
       env:
         PRPERF_RUN: ${{ inputs.run }}
+        PRPERF_RECORD: ${{ inputs.record }}
+        PRPERF_RPERF_VERSION: ${{ inputs.rperf_version }}
         PRPERF_PREPARE_RUN: ${{ inputs.prepare_run }}
         PRPERF_COUNT: ${{ inputs.count }}
         PRPERF_BENCHMARK: ${{ inputs.benchmark }}
@@ -72,3 +98,6 @@ runs:
         PRPERF_COMMENT: ${{ inputs.comment }}
         PRPERF_SERVER: ${{ inputs.server }}
         PRPERF_UPLOAD: ${{ inputs.upload }}
+        # Used to write the Check Run/comment with the workflow token on public,
+        # install-free repos (no-op for installed repos — the App writes them).
+        GH_TOKEN: ${{ inputs.token }}

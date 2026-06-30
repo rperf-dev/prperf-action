@@ -8,7 +8,10 @@ run_case() {
   local name="$1" expected="$2"
   shift 2
   local out
-  out="$(GITHUB_STEP_SUMMARY=/dev/null "$@" bash ./run.sh 2>&1)"
+  # These cases feed a plain command as `run` (they test collect/upload/validate,
+  # not the rperf wrapping), so default record=false — a case can override with
+  # PRPERF_RECORD=true in its own env args.
+  out="$(GITHUB_STEP_SUMMARY=/dev/null PRPERF_RECORD=false "$@" bash ./run.sh 2>&1)"
   local code=$?
   if [ "$code" -ne "$expected" ]; then
     echo "FAIL $name: exit $code (expected $expected)"
@@ -69,6 +72,14 @@ run_case "prepare_run runs before measuring" 0 \
 run_case "prepare_run failure fails the step" 1 \
   env PRPERF_PREPARE_RUN="false" \
       PRPERF_RUN="cp $tmp/new.json.gz \"\$PRPERF_DIR/\"" PRPERF_COUNT=1 \
+      PRPERF_SERVER=http://unused PRPERF_UPLOAD=false
+
+# record: true on a Bundler project whose bundle has no rperf -> clear error
+# (we never inject an rperf that could clash with the app's own dependency).
+printf 'source "https://rubygems.org"\n' > "$tmp/Gemfile"
+run_case "record=true without rperf in the bundle is a clear error" 1 \
+  env PRPERF_RECORD=true BUNDLE_GEMFILE="$tmp/Gemfile" \
+      PRPERF_RUN="bin/rails runner \"\"" PRPERF_COUNT=1 \
       PRPERF_SERVER=http://unused PRPERF_UPLOAD=false
 
 [ "$failures" -eq 0 ] || exit 1
