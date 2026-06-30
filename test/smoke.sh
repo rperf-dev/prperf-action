@@ -74,12 +74,22 @@ run_case "prepare_run failure fails the step" 1 \
       PRPERF_RUN="cp $tmp/new.json.gz \"\$PRPERF_DIR/\"" PRPERF_COUNT=1 \
       PRPERF_SERVER=http://unused PRPERF_UPLOAD=false
 
-# record: true on a Bundler project whose bundle has no rperf -> clear error
-# (we never inject an rperf that could clash with the app's own dependency).
-printf 'source "https://rubygems.org"\n' > "$tmp/Gemfile"
-run_case "record=true without rperf in the bundle is a clear error" 1 \
-  env PRPERF_RECORD=true BUNDLE_GEMFILE="$tmp/Gemfile" \
-      PRPERF_RUN="bin/rails runner \"\"" PRPERF_COUNT=1 \
+# record: true wiring — a fake `rperf` on PATH answers `--print-env`, and the
+# action must source it, become root, and exec the command verbatim (here a cp
+# that produces the profile). No real rperf / network needed.
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/rperf" <<'FAKE'
+#!/usr/bin/env bash
+case " $* " in
+  *" --print-env "*) echo "export RPERF_FAKE=1"; exit 0 ;;
+  *" --version "*)   echo "rperf 9.9.9"; exit 0 ;;
+esac
+exit 0
+FAKE
+chmod +x "$tmp/bin/rperf"
+run_case "record=true sources --print-env and execs the command verbatim" 0 \
+  env PRPERF_RECORD=true PATH="$tmp/bin:$PATH" \
+      PRPERF_RUN="cp $tmp/new.json.gz \"\$PRPERF_DIR/\"" PRPERF_COUNT=1 \
       PRPERF_SERVER=http://unused PRPERF_UPLOAD=false
 
 [ "$failures" -eq 0 ] || exit 1

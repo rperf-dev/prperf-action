@@ -12,7 +12,7 @@ the Check Run server-side as the App.
 
 Requirements:
 
-- **rperf >= 0.10.** In a Bundler project, put `rperf` in your `Gemfile` (a
+- **rperf >= 0.11.** In a Bundler project, put `rperf` in your `Gemfile` (a
   `group :rperf` is fine) — the action measures with the bundle's rperf. With no
   Gemfile, the action installs rperf for you. Profiles must embed `meta`/`summary`;
   the action fails with a clear error on older formats.
@@ -156,14 +156,15 @@ step — it overrides the global defaults per key. Most projects won't need this
 
 ## rperf and your Gemfile
 
-rperf instruments your process in-process (it injects `-rrperf` and execs your
-command), so the rperf that measures must be the one your app loads:
+rperf instruments your process in-process (it auto-starts from `RUBYOPT=-rrperf`),
+so the rperf that measures must be the one your command loads. The action never
+rewrites your command — it sources rperf's env (`rperf record --print-env`) and
+runs your command verbatim, so a `bundle exec …` command stays bundler-managed
+and a plain `ruby …` stays plain.
 
-- **Bundler project (has a Gemfile):** keep `rperf` in the Gemfile and the
-  action runs `bundle exec rperf` — the CLI and the in-process rperf are the one
-  bundled version, so there is no version clash. The action will **not** inject a
-  different rperf (that would collide with an app that already depends on rperf).
-  Isolate it from production with a group if you like:
+- **Bundler project (has a Gemfile):** the action uses the bundle's rperf, so the
+  CLI and the in-process rperf are the one version (no clash). Keep `rperf` in the
+  Gemfile — a dedicated group is fine:
 
   ```ruby
   group :rperf do
@@ -171,8 +172,13 @@ command), so the rperf that measures must be the one your app loads:
   end
   ```
 
+  If rperf is not in the bundle, the action runs `bundle add rperf` for you (in
+  the CI checkout only). When that can't work — a frozen lockfile, Ruby < 3.4, or
+  no compiler — it warns, and a `bundle exec` / bin/rails benchmark then needs
+  rperf in your Gemfile.
+
 - **No Gemfile:** the action installs rperf (`rperf_version` to pin) and runs it
-  directly — no Bundler, nothing to clash with.
+  directly — no Bundler involved.
 
 The compatibility contract with the server is the profile's `format_version`,
 not the rperf gem version: any rperf whose profile the server understands is

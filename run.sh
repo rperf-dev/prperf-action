@@ -127,27 +127,29 @@ if [ -n "$prepare_run" ]; then
   echo "::endgroup::"
 fi
 
-# Decide how to run the measurement command. record=false means the user's `run`
-# already invokes rperf, so it is executed verbatim. Otherwise we wrap `run` in
-# `rperf record`, choosing the rperf to use by whether this is a Bundler project:
-#   - Gemfile present  -> `bundle exec rperf` (the bundle's rperf; its in-process
-#     -rrperf load matches the bundled version, so no Bundler activation clash).
-#     rperf MUST be in the Gemfile — we do not inject one (that would conflict
-#     with an app that already depends on rperf).
-#   - no Gemfile       -> a plain `rperf` (gem-installed here if missing). No
-#     Bundler is involved, so nothing to clash with.
-# The result is the array `record_prefix` prepended to `-- <run>`.
-record_prefix=()
+# With record=true we measure WITHOUT touching the user's command: rperf's
+# `--print-env` tells us the env a profiled process auto-starts from, we source
+# it, become the session root, and exec the command verbatim. So a `bundle exec`
+# command stays bundler-managed and a plain `ruby …` stays plain — the action
+# never adds `bundle exec`. rperf must be loadable in the profiled process:
+#   - Bundler project -> from the bundle. If rperf is not in it, `bundle add`
+#     rescues most cases (frozen lockfile / Ruby<3.4 / no compiler -> warn).
+#   - no Gemfile      -> a standalone gem-installed rperf.
+# `rperf_env` is the command that emits the env (run once per measurement).
+rperf_env=()
 if [ "$record" = "true" ]; then
   if [ -n "${BUNDLE_GEMFILE:-}" ] || [ -f Gemfile ] || [ -f gems.rb ]; then
     if ! bundle exec rperf --version >/dev/null 2>&1; then
-      echo "::error::rperf is not in your bundle. Add it to your Gemfile (a" \
-           "'group :rperf' is fine) so 'bundle exec rperf' works, or set" \
-           "record: false and invoke rperf yourself."
-      exit 1
+      echo "::group::bundle add rperf"
+      bundle add rperf >/dev/null 2>&1 \
+        || echo "::warning::could not add rperf to the bundle (frozen lockfile, Ruby < 3.4," \
+                "or no compiler). A 'bundle exec' or bin/rails benchmark needs rperf in your" \
+                "Gemfile (a 'group :rperf' is fine)."
+      echo "::endgroup::"
     fi
-    record_prefix=(bundle exec rperf record --snapshot-dir "$PRPERF_DIR" --)
-  else
+    bundle exec rperf --version >/dev/null 2>&1 && rperf_env=(bundle exec rperf)
+  fi
+  if [ "${#rperf_env[@]}" -eq 0 ]; then
     if ! command -v rperf >/dev/null 2>&1; then
       echo "::group::install rperf"
       if [ -n "$rperf_version" ]; then
@@ -157,18 +159,37 @@ if [ "$record" = "true" ]; then
       fi
       echo "::endgroup::"
     fi
-    record_prefix=(rperf record --snapshot-dir "$PRPERF_DIR" --)
+    rperf_env=(rperf)
   fi
 fi
+
+export PRPERF_RUN
+printenv_cmd=""
+[ "$record" = "true" ] && \
+  printenv_cmd="${rperf_env[*]} record --snapshot-dir $(printf '%q' "$PRPERF_DIR") --print-env"
 
 for n in $(seq 1 "$count"); do
   echo "::group::rperf run $n/$count"
   touch "$marker"
-  # The labels end up in meta.labels (rperf reads RPERF_META_LABELS; same
-  # mechanism as --label, but injectable without rewriting the user command).
-  # `bench` selects the comparison series on the server; `run` is the repeat.
-  if ! RPERF_META_LABELS="{\"bench\":\"$benchmark\",\"run\":$n}" \
-       "${record_prefix[@]}" bash -c "$PRPERF_RUN"; then
+  # The labels end up in meta.labels (rperf reads RPERF_META_LABELS). `bench`
+  # selects the comparison series on the server; `run` is the repeat.
+  labels="{\"bench\":\"$benchmark\",\"run\":$n}"
+  measure_ok=1
+  if [ "$record" = "true" ]; then
+    # Source rperf's env, then become the session root (export the pid that will
+    # exec the command, so that process — not this shell's child — is root) and
+    # exec the command verbatim. `eval "exec …"` keeps the user's quoting.
+    env RPERF_META_LABELS="$labels" bash -c '
+      _env="$('"$printenv_cmd"')" || { echo "::error::rperf --print-env failed" >&2; exit 1; }
+      eval "$_env"
+      export RPERF_ROOT_PROCESS=$$
+      eval "exec $PRPERF_RUN"
+    ' || measure_ok=
+  else
+    # record=false: the user invokes rperf themselves; run verbatim.
+    env RPERF_META_LABELS="$labels" bash -c "$PRPERF_RUN" || measure_ok=
+  fi
+  if [ -z "$measure_ok" ]; then
     echo "::endgroup::"
     echo "::error::measurement command failed on run $n"
     exit 1
@@ -189,10 +210,10 @@ if [ "${#profiles[@]}" -eq 0 ]; then
 fi
 echo "collected ${#profiles[@]} profile(s)"
 
-# rperf >= 0.10 embeds meta/summary as the leading JSON keys; older versions
+# rperf >= 0.11 embeds meta/summary as the leading JSON keys; older versions
 # produce profiles the server cannot use.
 if ! zcat -- "${profiles[0]}" 2>/dev/null | head -c 4096 | grep -q '"meta"'; then
-  echo "::error::profile has no embedded meta/summary — rperf >= 0.10 is required" \
+  echo "::error::profile has no embedded meta/summary — rperf >= 0.11 is required" \
        "(found an older profile format)"
   exit 1
 fi
@@ -228,19 +249,20 @@ for f in "${profiles[@]}"; do
     -H "X-Prperf-Default-Thresholds: $default_thresholds_b64" \
     -H "X-Prperf-Thresholds: $thresholds_b64" -H "X-Prperf-Comment: $comment" \
     --data-binary "@$f" || echo 000)"
-  case "$http_code" in
-    201)
-      uploaded=$((uploaded + 1))
-      view_url="$(jq -r '.view_url // empty' "$response")"
-      write_mode="$(jq -r '.write_mode // empty' "$response")"
-      ;;
-    402|429)
-      echo "::warning::upload rejected ($http_code): $(jq -r '.error // empty' "$response")"
-      ;;
-    *)
+  if [ "$http_code" = "201" ]; then
+    uploaded=$((uploaded + 1))
+    view_url="$(jq -r '.view_url // empty' "$response")"
+    write_mode="$(jq -r '.write_mode // empty' "$response")"
+  else
+    # Any non-201 is a warning only (CI is never failed). Surface the server's
+    # message when it sent one (install hint, plan limit, format_version, …).
+    msg="$(jq -r '.error // empty' "$response" 2>/dev/null)"
+    if [ -n "$msg" ]; then
+      echo "::warning::upload rejected ($http_code): $msg"
+    else
       echo "::warning::upload of $(basename "$f") failed (HTTP $http_code)"
-      ;;
-  esac
+    fi
+  fi
 done
 
 # Public, install-free repo on a PR: the server stored the profiles but does not

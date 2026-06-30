@@ -20,7 +20,7 @@ inputs:
     description: >
       Wrap `run` in `rperf record` (default true). Set to false when `run`
       already invokes rperf itself (advanced/custom rperf flags); then it is run
-      verbatim and must still emit one or more .json.gz profiles (rperf >= 0.10).
+      verbatim and must still emit one or more .json.gz profiles (rperf >= 0.11).
     required: false
     default: "true"
   rperf_version:
