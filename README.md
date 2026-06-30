@@ -61,6 +61,59 @@ rperf for you — without rewriting your command — using the bundle's rperf (o
 one it installs when there is no Gemfile). To drive rperf yourself instead, set
 `record: false` and write the full `rperf record ... -- ...` command in `run`.
 
+## Set it up with an AI agent
+
+Paste this to your coding agent (Claude Code, Copilot, …). The same text is
+served at <https://prperf.atdot.net/llms.txt>.
+
+````text
+Add prperf (Ruby PR performance-regression checks) to this repository:
+
+1. If there is a Gemfile, add `gem "rperf", "~> 0.11.1"` (a `group :rperf` is
+   fine) and update Gemfile.lock. No Gemfile -> skip; the action installs rperf.
+
+2. Create .github/workflows/prperf.yml with exactly this (fill in `run:` per #3):
+
+   name: prperf
+   on:
+     push:
+       branches: [ main, master ]   # records the base (default branch)
+     pull_request:                  # compared against the base
+   jobs:
+     bench:
+       runs-on: ubuntu-latest
+       permissions:
+         contents: read
+         id-token: write
+         checks: write
+         pull-requests: write
+       steps:
+         - uses: actions/checkout@v6
+         - uses: ruby/setup-ruby@v1
+           with: { bundler-cache: true }
+         - uses: rperf-dev/prperf-action@v1
+           with:
+             run: <BENCHMARK COMMAND>
+
+3. Choose `run:` — ONE deterministic command that exercises the path to watch,
+   written plainly. Examples: Rails boot -> `bin/rails runner ""`; an endpoint
+   -> a script that calls it repeatedly; a hot method -> `ruby bench/x.rb`.
+
+Rules:
+- Keep the permissions block as-is (id-token = OIDC upload; checks +
+  pull-requests = write the result on public repos; contents = checkout).
+- One workflow, triggered on BOTH push (default branch) and pull_request.
+- Do NOT put `bundle exec rperf record …` in `run:` — just the bare command;
+  the action measures it under rperf without rewriting it.
+- Requires rperf >= 0.11.1.
+- For a PRIVATE repo, tell the user to install the prperf GitHub App
+  (https://github.com/apps/prperf). Public repos need no install.
+- Fork PRs can't be measured (GitHub grants them no OIDC token).
+
+Reference: https://github.com/rperf-dev/prperf-action — full guide:
+https://rperf-dev.github.io/prperf-manual/
+````
+
 ## Inputs
 
 | Input | Description | Default |
