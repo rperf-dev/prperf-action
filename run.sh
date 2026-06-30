@@ -127,14 +127,32 @@ if [ -n "$prepare_run" ]; then
   echo "::endgroup::"
 fi
 
-# With record=true we measure WITHOUT touching the user's command: rperf's
-# `--print-env` tells us the env a profiled process auto-starts from, we source
-# it, become the session root, and exec the command verbatim. So a `bundle exec`
-# command stays bundler-managed and a plain `ruby …` stays plain — the action
-# never adds `bundle exec`. rperf must be loadable in the profiled process:
-#   - Bundler project -> from the bundle. If rperf is not in it, `bundle add`
-#     rescues most cases (frozen lockfile / Ruby<3.4 / no compiler -> warn).
+# ── Design note: measuring without rewriting the user's command (record=true) ─
+# Goal: run the user's command under rperf AS WRITTEN. A plain `ruby bench.rb`
+# must stay plain; a `bundle exec …` / `bin/rails …` must stay bundler-managed.
+#
+# Why not the obvious `rperf record -- <cmd>` (or `bundle exec rperf record …`)?
+# Both insert something into the child's RUBYOPT — rperf's launcher, and (via
+# `bundle exec`) `-rbundler/setup` — which forces bundler context onto a command
+# the user wrote as plain. That's the thing we explicitly don't want to do.
+#
+# Instead: `rperf record --print-env` prints the env a profiled process needs
+# (RUBYOPT=-rrperf, RPERF_*, a fork-aggregation session dir) and exits WITHOUT
+# running anything. We source it, then `export RPERF_ROOT_PROCESS=$$; exec <cmd>`.
+# exec preserves the pid, so the command process *is* the session root — its
+# forks/spawns become children and aggregate. `--print-env` deliberately omits
+# RPERF_ROOT_PROCESS so we can set it to the pid that will exec the command.
+#
+# Which rperf provides that env (it must be loadable in the profiled process):
+#   - Bundler project -> the bundle's rperf. If rperf isn't in the bundle,
+#     `bundle add` rescues it (frozen lockfile / Ruby<3.4 / no compiler -> warn).
 #   - no Gemfile      -> a standalone gem-installed rperf.
+#
+# Requires rperf >= 0.11.1: 0.11.0 added `--print-env`; 0.11.1 made rperf require
+# `json` lazily. rperf loads at boot via -rrperf, BEFORE the app's bundler/setup,
+# so an eager `require "json"` activated the default json gem and then clashed
+# with a bundle pinning a different json (Gem::LoadError). 0.11.1 defers it.
+# ─────────────────────────────────────────────────────────────────────────────
 # `rperf_env` is the command that emits the env (run once per measurement).
 rperf_env=()
 if [ "$record" = "true" ]; then

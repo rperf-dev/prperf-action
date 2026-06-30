@@ -154,37 +154,6 @@ step — it overrides the global defaults per key. Most projects won't need this
             alloc: "+5%"               # tightens the global +10% for endpoint1
 ```
 
-## rperf and your Gemfile
-
-rperf instruments your process in-process (it auto-starts from `RUBYOPT=-rrperf`),
-so the rperf that measures must be the one your command loads. The action never
-rewrites your command — it sources rperf's env (`rperf record --print-env`) and
-runs your command verbatim, so a `bundle exec …` command stays bundler-managed
-and a plain `ruby …` stays plain.
-
-- **Bundler project (has a Gemfile):** the action uses the bundle's rperf, so the
-  CLI and the in-process rperf are the one version (no clash). Keep `rperf` in the
-  Gemfile — a dedicated group is fine:
-
-  ```ruby
-  group :rperf do
-    gem "rperf"
-  end
-  ```
-
-  If rperf is not in the bundle, the action runs `bundle add rperf` for you (in
-  the CI checkout only). When that can't work — a frozen lockfile, Ruby < 3.4, or
-  no compiler — it warns, and a `bundle exec` / bin/rails benchmark then needs
-  rperf in your Gemfile.
-
-- **No Gemfile:** the action installs rperf (`rperf_version` to pin) and runs it
-  directly — no Bundler involved.
-
-The compatibility contract with the server is the profile's `format_version`,
-not the rperf gem version: any rperf whose profile the server understands is
-accepted, and a too-new format is rejected with a clear message rather than
-silently misread.
-
 ## Behavior and limitations
 
 - The measurement command failing **fails the step**; upload, Check-Run, and
@@ -194,6 +163,3 @@ silently misread.
 - **PRs from forks cannot upload**: GitHub does not grant `id-token: write`
   to fork-triggered workflows, so no OIDC token exists there (and the workflow
   token is read-only). Same-repo branch PRs work normally.
-- During the beta both **public and private** repositories work, for free.
-  Public needs no install; private installs the prperf App (so it can write the
-  Check Run). Paid plans (longer retention, higher limits) come later.
