@@ -24,6 +24,17 @@ prepare_run="${PRPERF_PREPARE_RUN:-}"
 # (ambient, not an action input). The per-step `thresholds` overrides it.
 default_thresholds="${PRPERF_DEFAULT_THRESHOLDS:-}"
 
+# Secrets the action receives but the MEASUREMENT must never see. The workflow
+# token is needed only by `gh` when writing the Check Run, and the OIDC request
+# token only by curl when minting the upload token — both at the very end.
+# Capture them now and drop them from the environment, so prepare_run, the
+# bundle/gem install hooks, and the benchmark command (all children of this
+# script, run further down) cannot read them through the inherited environment.
+gh_token="${GH_TOKEN:-}"
+oidc_req_url="${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+oidc_req_token="${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+unset GH_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+
 if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -lt 1 ]; then
   echo "::error::count must be a positive integer, got '$count'"
   exit 1
@@ -63,11 +74,14 @@ write_check_run() {
   title="$(jq -r '.check_run.title' <<<"$payload")"
   summary="$(jq -r '.check_run.summary' <<<"$payload")"
 
-  if [ -z "${GH_TOKEN:-}" ]; then
+  if [ -z "$gh_token" ]; then
     echo "::warning::no token to write the Check Run. Add 'permissions: checks: write'" \
          "and 'pull-requests: write' (public repos are written with the workflow token)."
     return
   fi
+  # Re-export the token only here, local to this function: `gh` below reads it
+  # from the environment, and it is dropped again as soon as we return.
+  local -x GH_TOKEN="$gh_token"
 
   # Upsert the Check Run: PATCH the existing one for this head sha+name, else
   # POST. The body is built with jq and sent via --input - so the nested
@@ -241,14 +255,14 @@ fi
 
 [ "$upload" = "true" ] || { echo "upload: false — skipping upload"; exit 0; }
 
-if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+if [ -z "$oidc_req_url" ]; then
   echo "::error::OIDC token unavailable. Add 'permissions: id-token: write' to the job." \
        "Note: workflows triggered by PRs from forks never get OIDC tokens."
   exit 1
 fi
 
-token="$(curl -sf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-  "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=rperf-ci" | jq -r '.value')"
+token="$(curl -sf -H "Authorization: Bearer $oidc_req_token" \
+  "$oidc_req_url&audience=rperf-ci" | jq -r '.value')"
 if [ -z "$token" ] || [ "$token" = "null" ]; then
   echo "::warning::could not obtain an OIDC token; skipping upload"
   exit 0
