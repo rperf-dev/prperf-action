@@ -210,10 +210,10 @@ if [ "${#profiles[@]}" -eq 0 ]; then
 fi
 echo "collected ${#profiles[@]} profile(s)"
 
-# rperf >= 0.11 embeds meta/summary as the leading JSON keys; older versions
+# rperf >= 0.11.1 embeds meta/summary as the leading JSON keys; older versions
 # produce profiles the server cannot use.
 if ! zcat -- "${profiles[0]}" 2>/dev/null | head -c 4096 | grep -q '"meta"'; then
-  echo "::error::profile has no embedded meta/summary — rperf >= 0.11 is required" \
+  echo "::error::profile has no embedded meta/summary — rperf >= 0.11.1 is required" \
        "(found an older profile format)"
   exit 1
 fi

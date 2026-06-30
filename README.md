@@ -7,12 +7,12 @@ PR comment when your thresholds are exceeded). It never blocks CI.
 
 **Public repositories need no App install** — the action writes the Check Run
 and comment with the workflow token. **Private repositories** install the
-[prperf GitHub App](https://github.com/apps/prperf) (paid plan), which writes
-the Check Run server-side as the App.
+[prperf GitHub App](https://github.com/apps/prperf) so it can write the Check
+Run server-side (free during the beta; paid plans come later).
 
 Requirements:
 
-- **rperf >= 0.11.** In a Bundler project, put `rperf` in your `Gemfile` (a
+- **rperf >= 0.11.1.** In a Bundler project, put `rperf` in your `Gemfile` (a
   `group :rperf` is fine) — the action measures with the bundle's rperf. With no
   Gemfile, the action installs rperf for you. Profiles must embed `meta`/`summary`;
   the action fails with a clear error on older formats.
@@ -194,5 +194,6 @@ silently misread.
 - **PRs from forks cannot upload**: GitHub does not grant `id-token: write`
   to fork-triggered workflows, so no OIDC token exists there (and the workflow
   token is read-only). Same-repo branch PRs work normally.
-- During the free beta, **public repositories only**; private repositories
-  arrive with paid plans (and require the App installed).
+- During the beta both **public and private** repositories work, for free.
+  Public needs no install; private installs the prperf App (so it can write the
+  Check Run). Paid plans (longer retention, higher limits) come later.
