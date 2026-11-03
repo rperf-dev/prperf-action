@@ -6,7 +6,9 @@
 #
 # Failure policy:
 # - the measurement command failing fails the step (a broken benchmark is
-#   the user's signal to act on)
+#   the user's signal to act on), as does an rperf < 0.11.1 or a same-repo
+#   job without `id-token: write` (misconfigurations the user must fix)
+# - a PR from a fork (no OIDC token by GitHub policy) is skipped with a notice
 # - upload / Check-Run / comment problems NEVER fail the step (warnings only) —
 #   prperf must not block anyone's CI
 set -u
@@ -30,10 +32,30 @@ default_thresholds="${PRPERF_DEFAULT_THRESHOLDS:-}"
 # Capture them now and drop them from the environment, so prepare_run, the
 # bundle/gem install hooks, and the benchmark command (all children of this
 # script, run further down) cannot read them through the inherited environment.
+# GITHUB_TOKEN is dropped too in case the job exported it; nothing here needs it.
 gh_token="${GH_TOKEN:-}"
 oidc_req_url="${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
 oidc_req_token="${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
-unset GH_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+unset GH_TOKEN GITHUB_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+
+# Every curl: bounded wait, a few retries on connection refusal / transient
+# HTTP errors. The upload gets a longer cap (profiles can be several MB).
+curl_opts=(--max-time 60 --retry 3 --retry-connrefused)
+upload_curl_opts=(--max-time 120 --retry 3 --retry-connrefused)
+
+# curl's "000" means it never got an HTTP status at all.
+http_status_msg() {
+  if [ "$1" = "000" ]; then echo "connection failed or timed out"; else echo "HTTP $1"; fi
+}
+
+# PRs from forks never get an OIDC token (GitHub policy), so nothing can be
+# uploaded; that is not a misconfiguration and must not fail the job.
+is_fork_pr() {
+  [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -n "${GITHUB_EVENT_PATH:-}" ] || return 1
+  local head_repo
+  head_repo="$(jq -r '.pull_request.head.repo.full_name // empty' "$GITHUB_EVENT_PATH" 2>/dev/null)"
+  [ -n "$head_repo" ] && [ "$head_repo" != "${GITHUB_REPOSITORY:-}" ]
+}
 
 if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -lt 1 ]; then
   echo "::error::count must be a positive integer, got '$count'"
@@ -43,6 +65,12 @@ fi
 if ! [[ "$benchmark" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "::error::benchmark must match [A-Za-z0-9._-]+, got '$benchmark'"
   exit 1
+fi
+
+# Skip before measuring: the result could never be uploaded anyway.
+if [ "$upload" = "true" ] && is_fork_pr; then
+  echo "::notice::fork PR: no OIDC token, prperf cannot upload — skipping"
+  exit 0
 fi
 
 # Write (or update) the Check Run and sticky comment for a public repo, using
@@ -61,18 +89,25 @@ write_check_run() {
   pr_number="$(jq -r '.pull_request.number // empty' "$GITHUB_EVENT_PATH")"
   [ -n "$head_sha" ] || { echo "::warning::no PR head sha; skipping Check Run"; return; }
 
-  payload="$(curl -sf -X POST "$server/api/v1/checks/render" \
+  local response code msg
+  response="$(mktemp)"
+  code="$(curl -s "${curl_opts[@]}" -o "$response" -w '%{http_code}' -X POST "$server/api/v1/checks/render" \
     -H "Authorization: Bearer $oidc" -H "Content-Type: application/json" \
     -d "$(jq -n --arg h "$head_sha" --arg br "$base_ref" --arg bs "$base_sha" \
-            '{head_sha:$h, base_ref:$br, base_sha:$bs}')")" || {
-    echo "::warning::could not render the Check Run (server error); skipping"
+            '{head_sha:$h, base_ref:$br, base_sha:$bs}')" || echo 000)"
+  if [ "$code" != "200" ]; then
+    msg="$(jq -r '.error // empty' "$response" 2>/dev/null)"
+    echo "::warning::could not render the Check Run (${msg:-$(http_status_msg "$code")}); skipping"
     return
-  }
+  fi
+  payload="$(cat "$response")"
 
-  local name title summary
+  # details_url (diff flamegraph) is optional: older servers omit it.
+  local name title summary details_url
   name="$(jq -r '.check_run.name' <<<"$payload")"
   title="$(jq -r '.check_run.title' <<<"$payload")"
   summary="$(jq -r '.check_run.summary' <<<"$payload")"
+  details_url="$(jq -r '.check_run.details_url // empty' <<<"$payload")"
 
   if [ -z "$gh_token" ]; then
     echo "::warning::no token to write the Check Run. Add 'permissions: checks: write'" \
@@ -86,17 +121,21 @@ write_check_run() {
   # Upsert the Check Run: PATCH the existing one for this head sha+name, else
   # POST. The body is built with jq and sent via --input - so the nested
   # `output` object is real JSON (gh's -f does not parse bracket nesting).
+  # check_name filters server-side so >30 check runs on the sha can't hide ours.
   local existing
-  existing="$(gh api "repos/$GITHUB_REPOSITORY/commits/$head_sha/check-runs" \
-    -q ".check_runs[] | select(.name==\"$name\") | .id" 2>/dev/null | head -1)"
+  existing="$(gh api --method GET "repos/$GITHUB_REPOSITORY/commits/$head_sha/check-runs" \
+    -f check_name="$name" -F per_page=100 2>/dev/null \
+    | jq -r --arg n "$name" '.check_runs[] | select(.name==$n) | .id' | head -1)"
   if [ -n "$existing" ]; then
-    jq -n --arg t "$title" --arg s "$summary" \
-      '{status:"completed", conclusion:"success", output:{title:$t, summary:$s}}' \
+    jq -n --arg t "$title" --arg s "$summary" --arg d "$details_url" \
+      '{status:"completed", conclusion:"success", output:{title:$t, summary:$s}}
+       + (if $d != "" then {details_url:$d} else {} end)' \
       | gh api -X PATCH "repos/$GITHUB_REPOSITORY/check-runs/$existing" --input - >/dev/null 2>&1 \
       || echo "::warning::could not update the Check Run (need 'checks: write')"
   else
-    jq -n --arg n "$name" --arg sha "$head_sha" --arg t "$title" --arg s "$summary" \
-      '{name:$n, head_sha:$sha, status:"completed", conclusion:"success", output:{title:$t, summary:$s}}' \
+    jq -n --arg n "$name" --arg sha "$head_sha" --arg t "$title" --arg s "$summary" --arg d "$details_url" \
+      '{name:$n, head_sha:$sha, status:"completed", conclusion:"success", output:{title:$t, summary:$s}}
+       + (if $d != "" then {details_url:$d} else {} end)' \
       | gh api -X POST "repos/$GITHUB_REPOSITORY/check-runs" --input - >/dev/null 2>&1 \
       || echo "::warning::could not create the Check Run (need 'checks: write')"
   fi
@@ -106,8 +145,8 @@ write_check_run() {
     local marker body cid
     marker="$(jq -r '.comment.marker' <<<"$payload")"
     body="$(jq -r '.comment.body' <<<"$payload")"
-    cid="$(gh api "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" --paginate \
-      -q ".[] | select(.body | contains(\"$marker\")) | .id" 2>/dev/null | head -1)"
+    cid="$(gh api "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" --paginate 2>/dev/null \
+      | jq -r --arg m "$marker" '.[] | select(.body | contains($m)) | .id' | head -1)"
     if [ -n "$cid" ]; then
       jq -n --arg b "$body" '{body:$b}' \
         | gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$cid" --input - >/dev/null 2>&1 \
@@ -193,6 +232,19 @@ if [ "$record" = "true" ]; then
     fi
     rperf_env=(rperf)
   fi
+
+  # Fail early with the version, not later with "unknown option --print-env".
+  rperf_min=0.11.1
+  rperf_found="$("${rperf_env[@]}" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+  if [ -z "$rperf_found" ]; then
+    echo "::error::could not determine the rperf version ('${rperf_env[*]} --version' failed)"
+    exit 1
+  fi
+  if [ "$(printf '%s\n' "$rperf_min" "$rperf_found" | sort -V | head -1)" != "$rperf_min" ]; then
+    echo "::error::rperf $rperf_found found; >= $rperf_min required" \
+         "(bundle update rperf / set rperf_version)"
+    exit 1
+  fi
 fi
 
 export PRPERF_RUN
@@ -255,13 +307,13 @@ fi
 
 [ "$upload" = "true" ] || { echo "upload: false — skipping upload"; exit 0; }
 
+# Fork PRs were skipped above, so a missing URL here is a same-repo misconfig.
 if [ -z "$oidc_req_url" ]; then
-  echo "::error::OIDC token unavailable. Add 'permissions: id-token: write' to the job." \
-       "Note: workflows triggered by PRs from forks never get OIDC tokens."
+  echo "::error::OIDC token unavailable. Add 'permissions: id-token: write' to the job."
   exit 1
 fi
 
-token="$(curl -sf -H "Authorization: Bearer $oidc_req_token" \
+token="$(curl -sf "${curl_opts[@]}" -H "Authorization: Bearer $oidc_req_token" \
   "$oidc_req_url&audience=rperf-ci" | jq -r '.value')"
 if [ -z "$token" ] || [ "$token" = "null" ]; then
   echo "::warning::could not obtain an OIDC token; skipping upload"
@@ -279,7 +331,7 @@ write_mode=""
 uploaded=0
 for f in "${profiles[@]}"; do
   response="$(mktemp)"
-  http_code="$(curl -s -o "$response" -w '%{http_code}' -X POST "$server/api/v1/upload" \
+  http_code="$(curl -s "${upload_curl_opts[@]}" -o "$response" -w '%{http_code}' -X POST "$server/api/v1/upload" \
     -H "Authorization: Bearer $token" -H "Content-Type: application/gzip" \
     -H "X-Prperf-Default-Thresholds: $default_thresholds_b64" \
     -H "X-Prperf-Thresholds: $thresholds_b64" -H "X-Prperf-Comment: $comment" \
@@ -295,7 +347,7 @@ for f in "${profiles[@]}"; do
     if [ -n "$msg" ]; then
       echo "::warning::upload rejected ($http_code): $msg"
     else
-      echo "::warning::upload of $(basename "$f") failed (HTTP $http_code)"
+      echo "::warning::upload of $(basename "$f") failed ($(http_status_msg "$http_code"))"
     fi
   fi
 done

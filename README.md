@@ -12,10 +12,11 @@ Run server-side (free during the beta; paid plans come later).
 
 Requirements:
 
+- **Ruby >= 3.4** (rperf's requirement).
 - **rperf >= 0.11.1.** In a Bundler project, put `rperf` in your `Gemfile` (a
   `group :rperf` is fine) — the action measures with the bundle's rperf. With no
-  Gemfile, the action installs rperf for you. Profiles must embed `meta`/`summary`;
-  the action fails with a clear error on older formats.
+  Gemfile, the action installs rperf for you. An older rperf (or an older
+  profile format with `record: false`) fails the step with a clear error.
 - **`permissions`** on the job:
   - `id-token: write` — uploads authenticate with the OIDC token (no secrets)
   - `checks: write` and `pull-requests: write` — write the Check Run / comment
@@ -41,6 +42,7 @@ on:
 jobs:
   bench:
     runs-on: ubuntu-latest
+    timeout-minutes: 15        # a stuck benchmark/server must not run for hours
     permissions:
       contents: read
       id-token: write          # OIDC upload auth (no secrets)
@@ -82,6 +84,7 @@ Add prperf (Ruby PR performance-regression checks) to this repository:
    jobs:
      bench:
        runs-on: ubuntu-latest
+       timeout-minutes: 15
        permissions:
          contents: read
          id-token: write
@@ -105,10 +108,13 @@ Rules:
 - One workflow, triggered on BOTH push (default branch) and pull_request.
 - Do NOT put `bundle exec rperf record …` in `run:` — just the bare command;
   the action measures it under rperf without rewriting it.
-- Requires rperf >= 0.11.1.
+- Requires Ruby >= 3.4 and rperf >= 0.11.1 (an older rperf fails the step
+  with a clear error).
+- Keep `timeout-minutes` so a stuck benchmark never runs for hours.
 - For a PRIVATE repo, tell the user to install the prperf GitHub App
   (https://github.com/apps/prperf). Public repos need no install.
-- Fork PRs can't be measured (GitHub grants them no OIDC token).
+- Fork PRs can't be measured (GitHub grants them no OIDC token); the action
+  skips them with a notice instead of failing.
 
 Reference: https://github.com/rperf-dev/prperf-action — full guide:
 https://rperf-dev.github.io/prperf-manual/
@@ -169,6 +175,7 @@ benchmark, in a job-level `env`. The steps need nothing extra.
 jobs:
   bench:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
@@ -209,10 +216,13 @@ step — it overrides the global defaults per key. Most projects won't need this
 
 ## Behavior and limitations
 
-- The measurement command failing **fails the step**; upload, Check-Run, and
-  comment problems (plan limits, missing permissions, server errors) only emit
-  warnings — prperf never blocks your CI.
+- The measurement command failing **fails the step**, as does an rperf older
+  than 0.11.1 or a same-repo job missing `id-token: write` (misconfigurations
+  you need to fix). Upload, Check-Run, and comment problems (plan limits,
+  missing permissions, server errors, timeouts) only emit warnings — prperf
+  never blocks your CI. Every server call is bounded (`--max-time`, 3 retries).
 - A link to the uploaded profile is written to the job's step summary.
 - **PRs from forks cannot upload**: GitHub does not grant `id-token: write`
   to fork-triggered workflows, so no OIDC token exists there (and the workflow
-  token is read-only). Same-repo branch PRs work normally.
+  token is read-only). The action detects a fork PR and **skips with a notice**
+  (exit 0) without measuring. Same-repo branch PRs work normally.

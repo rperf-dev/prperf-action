@@ -92,5 +92,36 @@ run_case "record=true sources --print-env and execs the command verbatim" 0 \
       PRPERF_RUN="cp $tmp/new.json.gz \"\$PRPERF_DIR/\"" PRPERF_COUNT=1 \
       PRPERF_SERVER=http://unused PRPERF_UPLOAD=false
 
+
+# An old rperf must fail up front with its version, before any measurement.
+mkdir -p "$tmp/oldbin"
+cat > "$tmp/oldbin/rperf" <<'FAKE'
+#!/usr/bin/env bash
+case " $* " in
+  *" --version "*) echo "rperf 0.10.0"; exit 0 ;;
+esac
+echo "invalid option" >&2; exit 1
+FAKE
+chmod +x "$tmp/oldbin/rperf"
+run_case "rperf < 0.11.1 is a clear error" 1 \
+  env PRPERF_RECORD=true PATH="$tmp/oldbin:$PATH" \
+      PRPERF_RUN="false" PRPERF_COUNT=1 \
+      PRPERF_SERVER=http://unused PRPERF_UPLOAD=false
+
+# A PR from a fork can never upload (no OIDC token): skip with a notice before
+# measuring (run=false would fail if it ran). A same-repo PR without id-token
+# is still the misconfiguration error.
+printf '{"pull_request":{"number":1,"head":{"repo":{"full_name":"someone/fork"}}}}' > "$tmp/fork-event.json"
+printf '{"pull_request":{"number":1,"head":{"repo":{"full_name":"owner/repo"}}}}' > "$tmp/same-event.json"
+run_case "fork PR is skipped, not failed" 0 \
+  env GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$tmp/fork-event.json" \
+      GITHUB_REPOSITORY=owner/repo \
+      PRPERF_RUN="false" PRPERF_COUNT=1 PRPERF_SERVER=http://unused PRPERF_UPLOAD=true
+run_case "same-repo PR without id-token is still an error" 1 \
+  env GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$tmp/same-event.json" \
+      GITHUB_REPOSITORY=owner/repo \
+      PRPERF_RUN="cp $tmp/new.json.gz \"\$PRPERF_DIR/\"" PRPERF_COUNT=1 \
+      PRPERF_SERVER=http://unused PRPERF_UPLOAD=true
+
 [ "$failures" -eq 0 ] || exit 1
 echo "all smoke tests passed"
