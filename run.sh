@@ -205,6 +205,11 @@ fi
 # `json` lazily. rperf loads at boot via -rrperf, BEFORE the app's bundler/setup,
 # so an eager `require "json"` activated the default json gem and then clashed
 # with a bundle pinning a different json (Gem::LoadError). 0.11.1 defers it.
+# rperf still requires "time" (-> date) eagerly, so for a bundler project we
+# reorder RUBYOPT to load bundler/setup before rperf (see the loop below).
+# Note: `bundle exec rperf … --print-env` already carries -r…/bundler/setup in
+# the printed RUBYOPT, i.e. in a bundler project the command does run under
+# bundler/setup; only a Gemfile-less project is truly plain.
 # ─────────────────────────────────────────────────────────────────────────────
 # `rperf_env` is the command that emits the env (run once per measurement).
 rperf_env=()
@@ -269,6 +274,17 @@ for n in $(seq 1 "$count"); do
     env RPERF_META_LABELS="$labels" bash -c '
       _env="$('"$printenv_cmd"')" || { echo "::error::rperf --print-env failed" >&2; exit 1; }
       eval "$_env"
+      # In a bundler project `bundle exec rperf … --print-env` inherits
+      # -r…/bundler/setup into RUBYOPT, but AFTER -rrperf. rperf eagerly
+      # requires "time" (-> date), so loaded first it activates the default
+      # date gem; bundler/setup then fails if the bundle pins another version
+      # ("You have already activated date X"). Put bundler/setup first.
+      # (No apostrophes here: this block is inside a single-quoted bash -c.)
+      case " ${RUBYOPT:-} " in *" -r"*"bundler/setup "*)
+        _bs="$(printf "%s\n" "$RUBYOPT" | tr " " "\n" | grep -m1 -- "bundler/setup$")"
+        _rest="$(printf "%s\n" "$RUBYOPT" | tr " " "\n" | grep -vxF -- "$_bs" | tr "\n" " ")"
+        export RUBYOPT="$_bs ${_rest% }";;
+      esac
       export RPERF_ROOT_PROCESS=$$
       eval "exec $PRPERF_RUN"
     ' || measure_ok=
